@@ -16,13 +16,13 @@ const allowedOrigins = (process.env.CORS_ORIGINS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
+console.log('CORS Origins:', allowedOrigins);
+
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    const isLocal = /^(http|https):\/\/(localhost|127\.0\.0\.1)(:\\d+)?$/i.test(origin);
-    const isAllowed = allowedOrigins.includes(origin);
-    if (isLocal || isAllowed) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
+    console.log('Request from origin:', origin);
+    // Tạm thời cho phép tất cả origin để debug
+    return callback(null, true);
   }
 }));
 app.use(express.json());
@@ -238,10 +238,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Serve frontend (for production)
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/index.html'));
-});
+// Không serve frontend tại backend (frontend deploy trên Vercel)
 
 // Error handling middleware
 app.use((error, req, res, next) => {
