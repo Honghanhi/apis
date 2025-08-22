@@ -149,6 +149,21 @@ app.get('/api/documents/:id', async (req, res) => {
   }
 });
 
+// Preview document
+app.get('/api/documents/:id/preview', async (req, res) => {
+  try {
+    const document = await Document.findById(req.params.id);
+    if (!document) {
+      return res.status(404).json({ error: 'Không tìm thấy tài liệu' });
+    }
+    
+    // Redirect to Cloudinary URL for preview
+    res.redirect(document.fileUrl);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Update document metadata
 app.patch('/api/documents/:id', async (req, res) => {
   try {
