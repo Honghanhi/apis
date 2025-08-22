@@ -21,9 +21,18 @@ console.log('CORS Origins:', allowedOrigins);
 app.use(cors({
   origin: function(origin, callback) {
     console.log('Request from origin:', origin);
-    // Tạm thời cho phép tất cả origin để debug
+    
+    // Cho phép requests không có origin (file://, local development)
+    if (!origin) {
+      console.log('Allowing request without origin (file:// or local dev)');
+      return callback(null, true);
+    }
+    
+    // Cho phép tất cả origin tạm thời để debug
+    console.log('Allowing origin:', origin);
     return callback(null, true);
-  }
+  },
+  credentials: false
 }));
 app.use(express.json());
 app.use(express.static('public'));
