@@ -86,17 +86,45 @@ function formatFileSize(bytes) {
 // Upload file to Cloudinary
 async function uploadToCloudinary(buffer, originalName) {
   return new Promise((resolve, reject) => {
+    const fileExtension = path.extname(originalName).toLowerCase();
+    
+    // Xác định resource_type dựa trên loại file
+    let resourceType = 'raw';
+    let uploadOptions = {
+      public_id: `documents/${Date.now()}_${originalName}`,
+      use_filename: true,
+      unique_filename: false,
+    };
+
+    // Đặc biệt xử lý cho PDF để đảm bảo Content-Type đúng
+    if (fileExtension === '.pdf') {
+      resourceType = 'raw';
+      uploadOptions = {
+        ...uploadOptions,
+        resource_type: 'raw',
+        format: 'pdf',
+        flags: 'attachment',
+        content_type: 'application/pdf'
+      };
+    } else if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(fileExtension)) {
+      resourceType = 'image';
+    } else {
+      resourceType = 'raw';
+    }
+
     const uploadStream = cloudinary.uploader.upload_stream(
       {
-        resource_type: 'raw',
-        public_id: `documents/${Date.now()}_${originalName}`,
-        use_filename: true,
-        unique_filename: false,
+        resource_type: resourceType,
+        ...uploadOptions
       },
       (error, result) => {
         if (error) {
           reject(error);
         } else {
+          // Đảm bảo URL có format đúng cho PDF
+          if (fileExtension === '.pdf') {
+            result.secure_url = result.secure_url.replace('/upload/', '/raw/upload/');
+          }
           resolve(result);
         }
       }
@@ -155,6 +183,15 @@ app.get('/api/documents/:id/preview', async (req, res) => {
     const document = await Document.findById(req.params.id);
     if (!document) {
       return res.status(404).json({ error: 'Không tìm thấy tài liệu' });
+    }
+    
+    const fileExtension = path.extname(document.fileName).toLowerCase();
+    
+    // Đặc biệt xử lý cho PDF để đảm bảo Content-Type đúng
+    if (fileExtension === '.pdf') {
+      // Thêm header để browser hiển thị PDF inline
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="' + document.fileName + '"');
     }
     
     // Redirect to Cloudinary URL for preview
