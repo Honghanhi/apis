@@ -58,9 +58,12 @@ const documentSchema = new mongoose.Schema({
   description: { type: String, default: '' },
   fileName: { type: String, required: true },
   fileUrl: { type: String, required: true },
+  previewUrl: { type: String, required: true },
+  downloadUrl: { type: String, required: true },
   fileSize: { type: String, required: true },
   uploadTime: { type: Date, default: Date.now },
-  cloudinaryPublicId: { type: String, required: true }
+  cloudinaryPublicId: { type: String, required: true },
+  fileType: { type: String, required: true }
 });
 
 const Document = mongoose.model('Document', documentSchema);
@@ -75,7 +78,15 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt'];
     const fileExtension = path.extname(file.originalname).toLowerCase();
-    if (allowedTypes.includes(fileExtension)) {
+    
+    // Kiểm tra MIME type cho PDF
+    if (fileExtension === '.pdf') {
+      if (file.mimetype === 'application/pdf') {
+        cb(null, true);
+      } else {
+        cb(new Error('File PDF không hợp lệ'), false);
+      }
+    } else if (allowedTypes.includes(fileExtension)) {
       cb(null, true);
     } else {
       cb(new Error('Loại file không được hỗ trợ'), false);
@@ -92,12 +103,28 @@ function formatFileSize(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// Helper function to create Cloudinary URLs for PDF
+function createCloudinaryUrls(secureUrl, fileType) {
+  if (fileType === '.pdf') {
+    // Đảm bảo URL có format đúng cho PDF
+    const baseUrl = secureUrl.replace('/upload/', '/raw/upload/');
+    return {
+      previewUrl: secureUrl, // URL cho preview (inline)
+      downloadUrl: baseUrl + '?flags=attachment' // URL cho download
+    };
+  }
+  return {
+    previewUrl: secureUrl,
+    downloadUrl: secureUrl
+  };
+}
+
 // Upload file to Cloudinary
 async function uploadToCloudinary(buffer, originalName) {
   return new Promise((resolve, reject) => {
     const fileExtension = path.extname(originalName).toLowerCase();
     
-    // Xác định resource_type dựa trên loại file
+    // Xác định resource_type và upload options dựa trên loại file
     let resourceType = 'raw';
     let uploadOptions = {
       public_id: `documents/${Date.now()}_${originalName}`,
@@ -110,7 +137,6 @@ async function uploadToCloudinary(buffer, originalName) {
       resourceType = 'raw';
       uploadOptions = {
         ...uploadOptions,
-        resource_type: 'raw',
         format: 'pdf',
         flags: 'attachment',
         content_type: 'application/pdf'
@@ -128,12 +154,19 @@ async function uploadToCloudinary(buffer, originalName) {
       },
       (error, result) => {
         if (error) {
+          console.error('Cloudinary upload error:', error);
           reject(error);
         } else {
-          // Đảm bảo URL có format đúng cho PDF
-          if (fileExtension === '.pdf') {
-            result.secure_url = result.secure_url.replace('/upload/', '/raw/upload/');
-          }
+          // Tạo URLs đúng format cho từng loại file
+          const urls = createCloudinaryUrls(result.secure_url, fileExtension);
+          result.preview_url = urls.previewUrl;
+          result.download_url = urls.downloadUrl;
+          console.log('Upload successful:', {
+            originalName,
+            fileType: fileExtension,
+            previewUrl: urls.previewUrl,
+            downloadUrl: urls.downloadUrl
+          });
           resolve(result);
         }
       }
@@ -180,7 +213,18 @@ app.get('/api/documents/:id', async (req, res) => {
     if (!document) {
       return res.status(404).json({ error: 'Không tìm thấy tài liệu' });
     }
-    res.json(document);
+    
+    // Thêm thông tin về URLs cho frontend
+    const response = {
+      ...document.toObject(),
+      urls: {
+        preview: document.previewUrl || document.fileUrl,
+        download: document.downloadUrl || document.fileUrl,
+        original: document.fileUrl
+      }
+    };
+    
+    res.json(response);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -194,19 +238,74 @@ app.get('/api/documents/:id/preview', async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy tài liệu' });
     }
     
-    const fileExtension = path.extname(document.fileName).toLowerCase();
+    // Sử dụng previewUrl cho preview
+    const previewUrl = document.previewUrl || document.fileUrl;
+    
+    if (!previewUrl) {
+      return res.status(404).json({ error: 'Không tìm thấy URL preview' });
+    }
+    
+    console.log('Preview request:', {
+      documentId: document._id,
+      fileName: document.fileName,
+      fileType: document.fileType,
+      previewUrl: previewUrl
+    });
     
     // Đặc biệt xử lý cho PDF để đảm bảo Content-Type đúng
-    if (fileExtension === '.pdf') {
+    if (document.fileType === '.pdf') {
       // Thêm header để browser hiển thị PDF inline
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'inline; filename="' + document.fileName + '"');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
     }
     
     // Redirect to Cloudinary URL for preview
-    res.redirect(document.fileUrl);
+    res.redirect(previewUrl);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Preview error:', error);
+    res.status(500).json({ error: 'Lỗi khi xem trước tài liệu' });
+  }
+});
+
+// Download document
+app.get('/api/documents/:id/download', async (req, res) => {
+  try {
+    const document = await Document.findById(req.params.id);
+    if (!document) {
+      return res.status(404).json({ error: 'Không tìm thấy tài liệu' });
+    }
+    
+    // Sử dụng downloadUrl cho download
+    const downloadUrl = document.downloadUrl || document.fileUrl;
+    
+    if (!downloadUrl) {
+      return res.status(404).json({ error: 'Không tìm thấy URL download' });
+    }
+    
+    console.log('Download request:', {
+      documentId: document._id,
+      fileName: document.fileName,
+      fileType: document.fileType,
+      downloadUrl: downloadUrl
+    });
+    
+    // Đặc biệt xử lý cho PDF để đảm bảo download đúng cách
+    if (document.fileType === '.pdf') {
+      // Thêm header để browser download PDF
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + document.fileName + '"');
+      res.setHeader('Cache-Control', 'no-cache');
+    } else {
+      // Cho các file khác
+      res.setHeader('Content-Disposition', 'attachment; filename="' + document.fileName + '"');
+    }
+    
+    // Redirect to Cloudinary URL for download
+    res.redirect(downloadUrl);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: 'Lỗi khi tải xuống tài liệu' });
   }
 });
 
@@ -241,6 +340,17 @@ app.post('/api/documents', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Tiêu đề và thể loại là bắt buộc' });
     }
 
+    // Validate file size
+    if (req.file.size > 10 * 1024 * 1024) { // 10MB
+      return res.status(400).json({ error: 'File quá lớn. Giới hạn 10MB' });
+    }
+
+    console.log('Uploading file:', {
+      originalName: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+
     // Upload to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(req.file.buffer, req.file.originalname);
     
@@ -252,15 +362,35 @@ app.post('/api/documents', upload.single('file'), async (req, res) => {
       description: description || '',
       fileName: req.file.originalname,
       fileUrl: cloudinaryResult.secure_url,
+      previewUrl: cloudinaryResult.preview_url,
+      downloadUrl: cloudinaryResult.download_url,
       fileSize: formatFileSize(req.file.size),
-      cloudinaryPublicId: cloudinaryResult.public_id
+      cloudinaryPublicId: cloudinaryResult.public_id,
+      fileType: path.extname(req.file.originalname).toLowerCase()
     });
 
     await newDocument.save();
+    
+    console.log('Document saved successfully:', {
+      id: newDocument._id,
+      title: newDocument.title,
+      fileType: newDocument.fileType
+    });
+
     res.status(201).json(newDocument);
   } catch (error) {
     console.error('Upload error:', error);
-    res.status(500).json({ error: error.message });
+    
+    // Xử lý lỗi cụ thể
+    if (error.message.includes('File PDF không hợp lệ')) {
+      return res.status(400).json({ error: 'File PDF không hợp lệ. Vui lòng kiểm tra lại file.' });
+    }
+    
+    if (error.message.includes('Loại file không được hỗ trợ')) {
+      return res.status(400).json({ error: 'Loại file không được hỗ trợ. Chỉ chấp nhận: PDF, DOC, DOCX, PPT, PPTX, TXT' });
+    }
+    
+    res.status(500).json({ error: 'Lỗi khi tải lên file. Vui lòng thử lại.' });
   }
 });
 
@@ -296,7 +426,29 @@ app.get('/api/categories', async (req, res) => {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    features: {
+      pdfSupport: true,
+      cloudinaryIntegration: true,
+      downloadEndpoint: true,
+      previewEndpoint: true
+    }
+  });
+});
+
+// Get supported file types
+app.get('/api/supported-types', (req, res) => {
+  res.json({
+    supportedTypes: ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt'],
+    maxFileSize: '10MB',
+    pdfFeatures: {
+      resourceType: 'raw',
+      flags: 'attachment',
+      contentType: 'application/pdf'
+    }
+  });
 });
 
 // Không serve frontend tại backend (frontend deploy trên Vercel)
